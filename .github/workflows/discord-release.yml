@@ -1,0 +1,83 @@
+name: Discord release announcement
+
+# Posts a published GitHub release to the Discord #releases channel.
+# Call it from the job that publishes the release:
+#
+#   notify:
+#     needs: release
+#     uses: FKMTime/.github/.github/workflows/discord-release.yml@main
+#     with:
+#       tag: v1.2.3
+#     secrets: inherit
+#
+# A release created with GITHUB_TOKEN doesn't trigger `release: published` workflows,
+# so it has to be called from the workflow that publishes the release, not from a
+# separate workflow listening for that event.
+#
+# Posts nothing, with a warning, until the DISCORD_RELEASES_WEBHOOK organization secret
+# exists. If the DISCORD_RELEASE_PINGS_ROLE_ID organization variable is set, the post mentions
+# that role.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag of the release to announce
+        required: true
+        type: string
+    secrets:
+      DISCORD_RELEASES_WEBHOOK:
+        # optional, so a missing secret skips the post instead of failing the caller
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    name: Announce on Discord
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+          ROLE_ID: ${{ vars.DISCORD_RELEASE_PINGS_ROLE_ID }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::DISCORD_RELEASES_WEBHOOK is not set; skipping the Discord post"
+            exit 0
+          fi
+
+          release=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json name,tagName,url,body,isPrerelease,assets)
+
+          if [ "$(jq -r .isPrerelease <<< "$release")" = true ]; then
+            echo "$TAG is a pre-release; not announcing it"
+            exit 0
+          fi
+
+          # Discord caps an embed description at 4096 characters; keep the post short and
+          # link the full notes instead.
+          payload=$(jq -n \
+            --argjson release "$release" \
+            --arg repo "${GITHUB_REPOSITORY#*/}" \
+            --arg role "$ROLE_ID" '
+            ($release.body // "" | if length > 1500 then .[:1500] + "…" else . end) as $notes
+            | (if $role == "" then {} else { content: "<@&\($role)>" } end) + {
+                allowed_mentions: { roles: (if $role == "" then [] else [$role] end) },
+                embeds: [{
+                  title: "\($repo) \($release.tagName)",
+                  url: $release.url,
+                  color: 3066993,
+                  description: ($notes + "\n\n[Full release notes and downloads](\($release.url))"),
+                  footer: { text: "\($release.assets | length) files attached to the release" }
+                }]
+              }')
+
+          curl --fail-with-body --silent --show-error \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "$WEBHOOK?wait=true" > /dev/null

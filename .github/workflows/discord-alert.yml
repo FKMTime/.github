@@ -1,0 +1,63 @@
+name: Discord failure alert
+
+# Posts a failed run to the Discord #alerts channel. Add it as the last job of a workflow
+# whose failure needs someone to act (Docker image builds, releases):
+#
+#   alert:
+#     needs: [build, push]
+#     if: failure() && github.event_name != 'pull_request'
+#     uses: FKMTime/.github/.github/workflows/discord-alert.yml@main
+#     secrets: inherit
+#
+# Posts nothing, with a warning, until the DISCORD_ALERTS_WEBHOOK organization secret exists.
+
+on:
+  workflow_call:
+    secrets:
+      DISCORD_ALERTS_WEBHOOK:
+        # optional, so a missing secret skips the post instead of failing the caller
+        required: false
+
+permissions: {}
+
+jobs:
+  alert:
+    name: Alert on Discord
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post alert
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_ALERTS_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW: ${{ github.workflow }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::DISCORD_ALERTS_WEBHOOK is not set; skipping the Discord post"
+            exit 0
+          fi
+
+          payload=$(jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg workflow "$WORKFLOW" \
+            --arg ref "$REF" \
+            --arg sha "${SHA:0:7}" \
+            --arg actor "$ACTOR" \
+            --arg url "$RUN_URL" '
+            {
+              allowed_mentions: { parse: [] },
+              embeds: [{
+                title: "Failed: \($workflow)",
+                url: $url,
+                color: 15158332,
+                description: "**\($repo)** on `\($ref)` at `\($sha)`, started by \($actor)."
+              }]
+            }')
+
+          curl --fail-with-body --silent --show-error \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "$WEBHOOK?wait=true" > /dev/null
