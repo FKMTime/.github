@@ -1,0 +1,77 @@
+name: Discord weekly digest
+
+# Posts the PRs merged in the past week into the repos organizers run but that publish no
+# releases (the main app above all) to the Discord #releases channel. Only user-facing PRs
+# are listed (Conventional Commit titles starting with feat, fix or perf); docs, chores,
+# CI and Dependabot bumps aren't news for organizers. A week with nothing to list posts
+# nothing.
+#
+# Posts nothing, with a warning, until the DISCORD_RELEASES_WEBHOOK organization secret exists.
+
+on:
+  schedule:
+    # Mondays, 08:00 UTC
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REPOS: FKMTime/FKMTime FKMTime/micro-connector FKMTime/fim
+
+jobs:
+  digest:
+    name: Post weekly digest
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::DISCORD_RELEASES_WEBHOOK is not set; skipping the Discord post"
+            exit 0
+          fi
+
+          since=$(date -u -d '7 days ago' +%Y-%m-%d)
+          repo_args=()
+          for repo in $REPOS; do repo_args+=(--repo "$repo"); done
+
+          # flags before `--`: everything after it is search query text
+          merged=$(gh search prs "${repo_args[@]}" \
+            --merged-at ">=$since" --limit 100 \
+            --json title,url,repository,closedAt \
+            -- -author:app/dependabot)
+          prs=$(jq '[.[] | select(.title | test("^(feat|fix|perf)(\\([^)]*\\))?!?:"))]' <<< "$merged")
+
+          if [ "$(jq length <<< "$prs")" -eq 0 ]; then
+            echo "Nothing user-facing merged since $since"
+            exit 0
+          fi
+
+          # One section per repo, oldest first. Discord caps an embed description at 4096
+          # characters, so a long week is cut off; the footer still gives the full count.
+          payload=$(jq -n --argjson prs "$prs" --argjson total "$(jq length <<< "$merged")" \
+            --arg since "$since" '
+            ($prs
+              | sort_by(.closedAt)
+              | group_by(.repository.name)
+              | map("**\(.[0].repository.name)**\n" + (map("• [\(.title)](\(.url))") | join("\n")))
+              | join("\n\n")) as $text
+            | {
+                allowed_mentions: { parse: [] },
+                embeds: [{
+                  title: "What changed this week",
+                  color: 3447003,
+                  description: (if ($text | length) > 3900 then $text[:3900] + "\n…" else $text end),
+                  footer: { text: "\($prs | length) user-facing of \($total) PRs merged since \($since)" }
+                }]
+              }')
+
+          curl --fail-with-body --silent --show-error \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "$WEBHOOK?wait=true" > /dev/null
