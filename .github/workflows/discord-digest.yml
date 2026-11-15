@@ -7,11 +7,12 @@ name: Discord weekly digest
 # nothing.
 #
 # Posts nothing, with a warning, until the DISCORD_RELEASES_WEBHOOK organization secret exists.
+#
+# Manual only. The weekly #releases post is now a written summary, drafted on Sundays and
+# posted after a maintainer approves it (see docs/internal/discord-server.md in
+# FKMTime/fkm-monorepo). Run this by hand as a fallback when that summary can't be made.
 
 on:
-  schedule:
-    # Mondays, 08:00 UTC
-    - cron: "0 8 * * 1"
   workflow_dispatch:
 
 permissions:
